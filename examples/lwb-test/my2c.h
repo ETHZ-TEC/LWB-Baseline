@@ -28,48 +28,21 @@
  *
  */
 
+#ifndef MY2C_H
+#define MY2C_H
+
 /*
-#include "contiki.h"
-#include "dev/button.h"
-#include "isr_compat.h"
+ * On the Tmote sky access to I2C/SPI/UART0 must always be exclusive.
+ */
+#define I2C_ENABLE()  (i2c_enable())
+#define I2C_DISABLE() (i2c_disable())
 
-#define BUTTON_PORT 2
-#define BUTTON_PIN  7
+void     my2c_enable(void);
+void     my2c_disable(void);
+int      my2c_start(void);
+void     my2c_stop(void);
 
-static struct button_msg button_msg;
+int      my2c_write(unsigned);
+unsigned my2c_read(int send_ack);
 
-static struct process *selecting_proc;
-
-void
-button_init(struct process *proc)
-{
-  button_msg.type = BUTTON_MSG_TYPE;
-
-  P2DIR &= ~BV(BUTTON_PIN);
-  P2SEL &= ~BV(BUTTON_PIN);
-
-  P2IES |= BV(BUTTON_PIN);
-  P2IFG &= ~BV(BUTTON_PIN);
-
-  selecting_proc = proc;
-  if(proc != NULL)
-    P2IE |= BV(BUTTON_PIN);
-  else
-    P2IE &= ~BV(BUTTON_PIN);
-}
-
-ISR(PORT2, __button_interrupt)
-{
-  static struct timer debouncetimer;
-
-  P2IFG &= ~BV(BUTTON_PIN);
-  if(timer_expired(&debouncetimer)) {
-    button_msg.value = P2IN & BV(BUTTON_PIN);
-    timer_set(&debouncetimer, CLOCK_SECOND/4);
-    if(selecting_proc != NULL) {
-      process_post(selecting_proc, PROCESS_EVENT_MSG, &button_msg);
-    }
-    LPM4_EXIT;
-  }
-}
-*/
+#endif /* I2C_H */

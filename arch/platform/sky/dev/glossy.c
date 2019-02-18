@@ -248,7 +248,9 @@ static uint16_t tbiv,
                 //high_T_irq,
                 rx_timeout,
                 bad_length,
+#if !COOJA
                 bad_header,
+#endif
                 bad_crc;
 
 static uint32_t total_rx_success_cnt;
@@ -396,10 +398,10 @@ glossy_start(uint16_t initiator_id,
   initiator = (initiator_id == node_id);
   sync = with_sync;
   tx_max = n_tx_max;
-  
+
   // disable all interrupts that may interfere with Glossy
   enable_other_interrupts(0);
-  
+
   // initialize Glossy variables
   tx_cnt = 0;
   rx_cnt = 0;
@@ -498,7 +500,7 @@ glossy_stop(void)
   }
   total_rx_success_cnt += rx_cnt;
   total_rx_try_cnt += rx_try_cnt;
-  
+
   GLOSSY_STOPPED;
 
   // return the number of times the packet has been received
@@ -550,7 +552,7 @@ glossy_timer_int_cb(void)
       tbiv = TBIV;        /* read TBIV to clear IFG */
       DCSTAT_CPU_ON;
       glossy_end_rx();
-      
+
     /*} else {
       DCSTAT_CPU_ON;
       // interrupt service delay is too high: do not relay the packet
@@ -559,7 +561,7 @@ glossy_timer_int_cb(void)
       tbiv = TBIV;  // clear IFG
       high_T_irq++;
     }*/
-    
+
   } else {
     DCSTAT_CPU_ON;
     // read TBIV to clear IFG
@@ -567,34 +569,34 @@ glossy_timer_int_cb(void)
 #if RTIMER_EXT_CONF_HF_ENABLE
     if(tbiv == TBIV_TBIFG) {
       rtimer_ext_notify_hf_timer_overflow();
-      
+
     } else
 #endif /* RTIMER_EXT_CONF_HF_ENABLE */
     if(state == GLOSSY_STATE_WAITING && SFD_IS_1) {
       // packet reception has started
       glossy_begin_rx();
     } else {
-      
+
       if(state == GLOSSY_STATE_RECEIVED && SFD_IS_1) {
         // packet transmission has started
         glossy_begin_tx();
-        
+
       } else {
-        
+
         if(state == GLOSSY_STATE_TRANSMITTING && !SFD_IS_1) {
           // packet transmission has finished
           glossy_end_tx();
-          
+
         } else {
           if(state == GLOSSY_STATE_ABORTED) {
             // packet reception has been aborted
             state = GLOSSY_STATE_WAITING;
-            
+
           } else {
             if((state == GLOSSY_STATE_WAITING) && (tbiv == TBIV_TBCCR4)) {
               // initiator timeout
               n_timeouts++;
-              
+
               if(rx_cnt == 0) {
                 // no packets received so far: send the packet again
                 tx_cnt = 0;
@@ -615,12 +617,12 @@ glossy_timer_int_cb(void)
                 radio_start_tx();
                 // schedule the timeout again
                 schedule_initiator_timeout();
-                
+
               } else {
                 // at least one packet has been received: just stop the timeout
                 stop_initiator_timeout();
               }
-              
+
             } else {
               if(tbiv == TBIV_TBCCR5) {
                 // rx timeout
@@ -631,7 +633,7 @@ glossy_timer_int_cb(void)
                 }
                 // stop the timeout
                 stop_rx_timeout();
-                
+
               } else {
                 if(state != GLOSSY_STATE_OFF) {
                   // something strange is going on: go back to the waiting state
@@ -651,6 +653,10 @@ glossy_timer_int_cb(void)
 /*---------------------------------------------------------------------------*/
 /*------------------------ Internal helper functions ------------------------*/
 /*---------------------------------------------------------------------------*/
+#if COOJA
+void __attribute__((__interrupt__ (TIMERA1_VECTOR))) timera1(void);
+#endif
+
 void
 enable_other_interrupts(uint8_t enable)
 {
@@ -669,7 +675,7 @@ enable_other_interrupts(uint8_t enable)
     TBCCTL0 |= int_state.tbie & CCIE;
   #if COOJA
     if(TACCTL2 & CCIFG) {   /* etimer is on CCR2 */
-      etimer_interrupt();
+	  timera1();
     }
   #endif
     DISABLE_SFD_INT();

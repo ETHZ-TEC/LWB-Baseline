@@ -46,6 +46,9 @@
 #include "random.h"
 #include "glossy.h"
 
+#include "leds.h"
+#include "cc2420_const.h"
+
 /*---------------------------------------------------------------------------*/
 /* internal sync state of the LWB on the source node */
 typedef enum {
@@ -91,7 +94,7 @@ typedef struct {
 } glossy_payload_t;
 /*---------------------------------------------------------------------------*/
 /**
- * @brief the finite state machine for the time synchronization on a source 
+ * @brief the finite state machine for the time synchronization on a source
  * node the next state can be retrieved from the current state (column) and
  * the latest event (row)
  * @note  undefined transitions force the SM to go back into bootstrap
@@ -101,17 +104,19 @@ typedef struct {
 #else
 #define AFTER_BOOTSTRAP     LWB_STATE_QUASI_SYNCED
 #endif
-static const 
-lwb_sync_state_t next_state[NUM_OF_SYNC_EVENTS][NUM_OF_SYNC_STATES] = 
+static const
+lwb_sync_state_t next_state[NUM_OF_SYNC_EVENTS][NUM_OF_SYNC_STATES] =
 {
 /* EVENTS:   \ STATES:    LWB_STATE_BOOTSTRAP, LWB_STATE_QUASI_SYNCED, LWB_STATE_SYNCED,    LWB_STATE_SYNCED2,   LWB_STATE_MISSED,    LWB_STATE_UNSYNCED,  LWB_STATE_UNSYNCED2 */
 /* 1st schedule rcvd */ { AFTER_BOOTSTRAP,     LWB_STATE_SYNCED,       LWB_STATE_BOOTSTRAP, LWB_STATE_SYNCED,    LWB_STATE_SYNCED,    LWB_STATE_BOOTSTRAP, LWB_STATE_SYNCED    },
 /* 2nd schedule rcvd */ { LWB_STATE_BOOTSTRAP, LWB_STATE_QUASI_SYNCED, LWB_STATE_SYNCED_2,  LWB_STATE_BOOTSTRAP, LWB_STATE_BOOTSTRAP, LWB_STATE_SYNCED_2,  LWB_STATE_BOOTSTRAP },
 /* schedule missed   */ { LWB_STATE_BOOTSTRAP, LWB_STATE_BOOTSTRAP,    LWB_STATE_MISSED,    LWB_STATE_UNSYNCED,  LWB_STATE_UNSYNCED,  LWB_STATE_UNSYNCED2, LWB_STATE_BOOTSTRAP }
 };
-/* note: syn2 = already synced */
-static const char* lwb_sync_state_to_string[NUM_OF_SYNC_STATES] = 
+/*
+// note: syn2 = already synced
+static const char* lwb_sync_state_to_string[NUM_OF_SYNC_STATES] =
 { "BOOTSTRAP", "QSYN", "SYN", "SYN2", "MISS", "USYN", "USYN2" };
+*/
 static const uint32_t guard_time[NUM_OF_SYNC_STATES] = {
 /* STATE:      LWB_STATE_BOOTSTRAP, LWB_STATE_QUASI_SYNCED, LWB_STATE_SYNCED,   LWB_STATE_SYNCED_2, LWB_STATE_MISSED,   LWB_STATE_UNSYNCED, LWB_STATE_UNSYNCED2 */
 /* T_GUARD: */ LWB_CONF_T_GUARD,    LWB_CONF_T_GUARD_2,     LWB_CONF_T_GUARD_1, LWB_CONF_T_GUARD_1, LWB_CONF_T_GUARD_2, LWB_CONF_T_GUARD_3, LWB_CONF_T_GUARD_3
@@ -201,14 +206,37 @@ static uint32_t           global_time;
 static uint8_t            payload_len;
 static uint8_t            urgent_stream_req;
 /* allocate memory in the SRAM (+1 to store the message length) */
-static uint8_t            in_buffer_mem[LWB_CONF_IN_BUFFER_SIZE * 
+static uint8_t            in_buffer_mem[LWB_CONF_IN_BUFFER_SIZE *
                                         (LWB_CONF_MAX_DATA_PKT_LEN + 1)];
 static uint8_t            out_buffer_mem[LWB_CONF_OUT_BUFFER_SIZE *
                                          (LWB_CONF_MAX_DATA_PKT_LEN + 1)];
 FIFO16(in_buffer, LWB_CONF_MAX_DATA_PKT_LEN + 1, LWB_CONF_IN_BUFFER_SIZE);
 FIFO16(out_buffer, LWB_CONF_MAX_DATA_PKT_LEN + 1, LWB_CONF_OUT_BUFFER_SIZE);
 /*---------------------------------------------------------------------------*/
-/* store a received message in the incoming queue, returns 1 if successful, 
+
+static inline void __attribute__((always_inline)) cc2420_radio_cs_on()		{ P4OUT &= ~BV(2);	}
+static inline void __attribute__((always_inline)) cc2420_radio_cs_off()		{ P4OUT |=  BV(2);	}
+
+/*---------------------------------------------------------------------------*/
+
+static inline uint8_t cc2420_radio_strobe(uint8_t s)
+{
+	cc2420_radio_cs_on();
+
+	U0TXBUF = s;
+	while (!(U0TCTL & TXEPT));
+
+	cc2420_radio_cs_off();
+
+	return U0RXBUF;
+
+	// note: if return value is not needed very often, think about returning void
+	// (and adding an extra get_status function) because U0RXBUF is volatile, i.e.,
+	// the compiler cannot optimize (remove) unnecessary read accesses by itself
+}
+
+/*---------------------------------------------------------------------------*/
+/* store a received message in the incoming queue, returns 1 if successful,
  * 0 otherwise */
 uint8_t
 lwb_in_buffer_put(const uint8_t * const data, uint8_t len)
@@ -218,7 +246,7 @@ lwb_in_buffer_put(const uint8_t * const data, uint8_t len)
   }
   if(len > LWB_CONF_MAX_DATA_PKT_LEN) {
     len = LWB_CONF_MAX_DATA_PKT_LEN;
-    DEBUG_PRINT_WARNING("received data packet is too big"); 
+    DEBUG_PRINT_WARNING("received data packet is too big");
   }
   /* received messages will have the max. length LWB_CONF_MAX_DATA_PKT_LEN */
   uint32_t pkt_addr = fifo16_put(&in_buffer);
@@ -259,15 +287,15 @@ lwb_out_buffer_get(uint8_t* out_data)
   return 0;
 }
 /*---------------------------------------------------------------------------*/
-/* puts a message into the outgoing queue, returns 1 if successful, 
+/* puts a message into the outgoing queue, returns 1 if successful,
  * 0 otherwise */
 uint8_t
 lwb_send_pkt(uint16_t recipient,
-             uint8_t stream_id, 
-             const uint8_t * const data, 
+             uint8_t stream_id,
+             const uint8_t * const data,
              uint8_t len)
 {
-  /* data has the max. length LWB_DATA_PKT_PAYLOAD_LEN, lwb header needs 
+  /* data has the max. length LWB_DATA_PKT_PAYLOAD_LEN, lwb header needs
    * to be added before the data is inserted into the queue */
   if(len > LWB_DATA_PKT_PAYLOAD_LEN || !data) {
     DEBUG_PRINT_WARNING("invalid payload length");
@@ -279,7 +307,7 @@ lwb_send_pkt(uint16_t recipient,
     uint8_t* next_msg = (uint8_t*)(uint16_t)pkt_addr;
     *(next_msg) = (uint8_t)recipient;   /* recipient L */
     *(next_msg + 1) = recipient >> 8;   /* recipient H */
-    *(next_msg + 2) = stream_id; 
+    *(next_msg + 2) = stream_id;
     *(next_msg + LWB_CONF_MAX_DATA_PKT_LEN) = len + LWB_HEADER_LEN;
     memcpy(next_msg + LWB_HEADER_LEN, data, len);
     return 1;
@@ -289,21 +317,21 @@ lwb_send_pkt(uint16_t recipient,
   return 0;
 }
 /*---------------------------------------------------------------------------*/
-/* copies the oldest received message in the queue into out_data and returns 
+/* copies the oldest received message in the queue into out_data and returns
  * the message size (in bytes) */
 uint8_t
 lwb_rcv_pkt(uint8_t* out_data,
-             uint16_t * const out_node_id, 
+             uint16_t * const out_node_id,
              uint8_t * const out_stream_id)
 {
   if(!out_data) { return 0; }
-  /* messages in the queue have the max. length LWB_CONF_MAX_DATA_PKT_LEN, 
+  /* messages in the queue have the max. length LWB_CONF_MAX_DATA_PKT_LEN,
    * lwb header needs to be stripped off; payload has max. length
    * LWB_DATA_PKT_PAYLOAD_LEN */
   uint32_t pkt_addr = fifo16_get(&in_buffer);
   if(FIFO16_ERROR != pkt_addr) {
    /* assume pointers are 16-bit */
-    uint8_t* next_msg = (uint8_t*)(uint16_t)pkt_addr; 
+    uint8_t* next_msg = (uint8_t*)(uint16_t)pkt_addr;
     uint8_t msg_len = *(next_msg + LWB_CONF_MAX_DATA_PKT_LEN) -
                       LWB_HEADER_LEN;
     if(msg_len > LWB_CONF_MAX_DATA_PKT_LEN) {
@@ -321,6 +349,12 @@ lwb_rcv_pkt(uint8_t* out_data,
   }
   DEBUG_PRINT_VERBOSE("lwb rx queue empty");
   return 0;
+}
+/*---------------------------------------------------------------------------*/
+void
+lwb_reset_rcv_queue(void)
+{
+	FIFO16_RESET(&in_buffer);
 }
 /*---------------------------------------------------------------------------*/
 uint8_t
@@ -413,21 +447,22 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
                             rcvd_data_pkts;
   static const void* callback_func = lwb_thread_host;
 
-  /* note: all statements above PT_BEGIN() will be executed each time the 
+  /* note: all statements above PT_BEGIN() will be executed each time the
    * protothread is scheduled */
-  
+
   PT_BEGIN(&lwb_pt);   /* declare variables before this statement! */
-    
+
   memset(&schedule, 0, sizeof(schedule));
-  
+
   /* initialization specific to the host node */
   schedule_len = lwb_sched_init(&schedule);
   sync_state = LWB_STATE_SYNCED;  /* the host is always 'synced' */
-  
+
   rtimer_ext_reset();
   rt->time = 0;
-  
+
   while(1) {
+	LWB_RND_ON;
 #if LWB_CONF_T_PREPROCESS
     if(pre_proc) {
       process_poll(pre_proc);
@@ -437,9 +472,9 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
 #endif /* LWB_CONF_T_PREPROCESS */
 
     t_start = rt->time;
-    
+
     /* --- COMMUNICATION ROUND STARTS --- */
-    
+
     LWB_SCHED_SET_AS_1ST(&schedule);          /* mark this schedule as first */
     LWB_SEND_SCHED();               /* send the previously computed schedule */
 
@@ -450,14 +485,14 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
 
     /* uncompress the schedule */
 #if LWB_CONF_SCHED_COMPRESS
-    lwb_sched_uncompress((uint8_t*)schedule.slot, 
+    lwb_sched_uncompress((uint8_t*)schedule.slot,
                          LWB_SCHED_N_SLOTS(&schedule));
 #endif /* LWB_CONF_SCHED_COMPRESS */
-    
+
     /* --- S-ACK SLOT --- */
-    
+
     if(LWB_SCHED_HAS_SACK_SLOT(&schedule)) {
-      payload_len = lwb_sched_prepare_sack(&glossy_payload.sack_pkt); 
+      payload_len = lwb_sched_prepare_sack(&glossy_payload.sack_pkt);
       /* wait for the slot to start */
       LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(0));
       LWB_SEND_PACKET();   /* transmit s-ack */
@@ -466,20 +501,20 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
     } else {
       DEBUG_PRINT_VERBOSE("no S-ACK slot");
     }
-    
+
     /* --- DATA SLOTS --- */
-    
+
     rcvd_data_pkts = 0;    /* number of received data packets in this round */
     if(LWB_SCHED_HAS_DATA_SLOT(&schedule)) {
       static uint8_t i = 0;
       for(i = 0; i < LWB_SCHED_N_SLOTS(&schedule); i++, slot_idx++) {
         streams_to_update[i] = LWB_INVALID_STREAM_ID;
-        /* is this our slot? Note: slots assigned to node ID 0 always belong 
+        /* is this our slot? Note: slots assigned to node ID 0 always belong
          * to the host */
         if(schedule.slot[i] == 0 || schedule.slot[i] == node_id) {
           /* send a data packet (if there is any) */
           payload_len = lwb_out_buffer_get(glossy_payload.raw_data);
-          if(payload_len) { 
+          if(payload_len) {
             /* note: stream ID is irrelevant here */
             /* wait until the data slot starts */
             LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(slot_idx));
@@ -506,7 +541,7 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
                                  glossy_payload.srq_pkt.id);
                 lwb_sched_proc_srq((lwb_stream_req_t*)
                                    &glossy_payload.raw_data[3]);
-              } else 
+              } else
               {
                 streams_to_update[i] = glossy_payload.data_pkt.stream_id;
                 DEBUG_PRINT_VERBOSE("data received (s=%u.%u l=%u)",
@@ -534,9 +569,9 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
         }
       }
     }
-    
+
     /* --- CONTENTION SLOT --- */
-    
+
     if(LWB_SCHED_HAS_CONT_SLOT(&schedule)) {
       /* wait until the slot starts, then receive the packet */
       LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(slot_idx) - LWB_CONF_T_GUARD);
@@ -553,14 +588,32 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
                                      lwb_get_send_buffer_state());
     stats.t_sched_max = MAX((uint16_t)RTIMER_ELAPSED, stats.t_sched_max);
 
+	// Turn of crystal oscillator of radio to save energy.
+	if (LWB_SCHED_N_SLOTS(&schedule) < LWB_CONF_MAX_DATA_SLOTS) {
+		// radio off
+		cc2420_radio_strobe(CC2420_SXOSCOFF);
+		LWB_RND_OFF;
+		//wait until 5ms before next wait_until
+		LWB_WAIT_UNTIL(t_start + LWB_CONF_T_SCHED2_START - (LWB_RTIMER_SECOND / 200));
+		// radio on
+		cc2420_radio_strobe(CC2420_SXOSCON);
+		// TODO: wait for stabilization and check afterwards if timings are ok
+		// while (!(cc2420_radio_strobe(CC2420_SNOP) & BV(CC2420_XOSC16M_STABLE)));
+		LWB_RND_ON;
+	}
+
     LWB_WAIT_UNTIL(t_start + LWB_CONF_T_SCHED2_START);
     LWB_SEND_SCHED();    /* send the schedule for the next round */
-    
+
     /* --- COMMUNICATION ROUND ENDS --- */
     /* time for other computations */
-    
+
+	// Turn of crystal oscillator of radio to save energy.
+	cc2420_radio_strobe(CC2420_SXOSCOFF);
+	LWB_RND_OFF;
+
     /* print out some stats */
-    DEBUG_PRINT_INFO("t=%lu ts=%u td=%u dp=%u p=%u per=%u fsr=%u", 
+    DEBUG_PRINT_INFO("t=%lu ts=%u td=%u dp=%u p=%u per=%u fsr=%u",
                      global_time,
                      stats.t_sched_max,
                      stats.t_proc_max,
@@ -568,8 +621,8 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
                      stats.pkt_cnt,
                      glossy_get_per(),
                      glossy_get_fsr());
-  
-    /* poll the other processes to allow them to run after the LWB task was 
+
+    /* poll the other processes to allow them to run after the LWB task was
      * suspended (note: the polled processes will be executed in the inverse
      * order they were started/created) */
     debug_print_poll();
@@ -577,14 +630,24 @@ PT_THREAD(lwb_thread_host(rtimer_ext_t *rt))
       /* will be executed before the debug print task */
       process_poll(post_proc);
     }
-    
+
+	// wait until 5ms before next wait_until
+	LWB_WAIT_UNTIL(t_start +
+                   (rtimer_ext_clock_t)schedule.period * LWB_RTIMER_SECOND /
+                   LWB_CONF_TIME_SCALE - LWB_CONF_T_PREPROCESS - (LWB_RTIMER_SECOND / 200));
+	cc2420_radio_strobe(CC2420_SXOSCON);
+	// TODO: wait for stabilization and check afterwards if timings are ok
+	// while (!(cc2420_radio_strobe(CC2420_SNOP) & BV(CC2420_XOSC16M_STABLE)));
+	LWB_RND_ON;
+
     /* suspend this task and wait for the next round */
     LWB_WAIT_UNTIL(t_start +
                    (rtimer_ext_clock_t)schedule.period * LWB_RTIMER_SECOND /
                    LWB_CONF_TIME_SCALE - LWB_CONF_T_PREPROCESS);
     LWB_AFTER_DEEPSLEEP();
+	LWB_RND_OFF;
   }
-  
+
   PT_END(&lwb_pt);
 }
 /*---------------------------------------------------------------------------*/
@@ -600,21 +663,23 @@ PT_THREAD(lwb_thread_src(rtimer_ext_t *rt))
   static int32_t  drift;
   static uint16_t period_last;
   static uint8_t  slot_idx;
+/*
   static uint8_t  relay_cnt_first_rx;
+*/
   static uint8_t  rounds_to_wait;
   static const void* callback_func = lwb_thread_src;
-  
+
   PT_BEGIN(&lwb_pt);   /* declare variables before this statement! */
-  
+
   memset(&schedule, 0, sizeof(schedule));
-  
+
   /* initialization specific to the source node */
   lwb_stream_init();
   sync_state  = LWB_STATE_BOOTSTRAP;
   period_last = LWB_CONF_SCHED_PERIOD_MIN;
-  
+
   while(1) {
-      
+	LWB_RND_ON;
 #if LWB_CONF_T_PREPROCESS
     if(pre_proc) {
       process_poll(pre_proc);
@@ -622,11 +687,11 @@ PT_THREAD(lwb_thread_src(rtimer_ext_t *rt))
     LWB_WAIT_UNTIL(rt->time +
                    LWB_CONF_T_PREPROCESS * LWB_RTIMER_SECOND / 1000);
 #endif /* LWB_CONF_T_PREPROCESS */
-    
+
     /* --- COMMUNICATION ROUND STARTS --- */
-    
+
     t_start = rt->time + t_guard;            /* in case the schedule is missed */
-    
+
     if(sync_state == LWB_STATE_BOOTSTRAP) {
 BOOTSTRAP:
       DEBUG_PRINT_MSG_NOW("BOOTSTRAP ");
@@ -655,7 +720,7 @@ BOOTSTRAP:
     if(LWB_STATE_BOOTSTRAP == sync_state) {
       goto BOOTSTRAP;         /* wrong schedule received > back to bootstrap */
     }
-    
+
     LWB_SCHED_SET_AS_2ND(&schedule);    /* clear the last bit of 'period' */
     if(glossy_is_t_ref_updated()) {
       /* timestamp of first RX; subtract a constant offset */
@@ -672,15 +737,17 @@ BOOTSTRAP:
 
     /* permission to participate in this round? */
     if(sync_state == LWB_STATE_SYNCED || sync_state == LWB_STATE_UNSYNCED) {
-      
+
       static uint8_t i;  /* must be static */
       slot_idx = 0;   /* reset the packet counter */
+/*
       relay_cnt_first_rx = glossy_get_relay_cnt();
+*/
 #if LWB_CONF_SCHED_COMPRESS
       lwb_sched_uncompress((uint8_t*)schedule.slot,
                            LWB_SCHED_N_SLOTS(&schedule));
 #endif /* LWB_CONF_SCHED_COMPRESS */
-      
+
       /* --- S-ACK SLOT --- */
 
       if(LWB_SCHED_HAS_SACK_SLOT(&schedule)) {
@@ -695,7 +762,7 @@ BOOTSTRAP:
             /* note: potential cause of problems (but: structure glossy_payload
              * should be aligned to an even address!) */
             if(*(uint16_t*)(glossy_payload.raw_data + (i * 4)) == node_id) {
-              uint8_t stream_id = *(uint8_t*)(glossy_payload.raw_data + 
+              uint8_t stream_id = *(uint8_t*)(glossy_payload.raw_data +
                                   (i * 4 + 2));
               stats.t_slot_last = schedule.time;
               rounds_to_wait = 0;
@@ -706,7 +773,7 @@ BOOTSTRAP:
                 DEBUG_PRINT_INFO("S-ACK received for stream %u (removed)",
                                  stream_id);
               }
-            } 
+            }
             i++;
           } while(i <= glossy_payload.sack_pkt.n_extra);
         } else {
@@ -714,7 +781,7 @@ BOOTSTRAP:
         }
         slot_idx++;   /* increment the packet counter */
       }
-      
+
       /* --- DATA SLOTS --- */
 
       if(LWB_SCHED_HAS_DATA_SLOT(&schedule)) {
@@ -748,7 +815,7 @@ BOOTSTRAP:
           } else
           {
             /* receive a data packet */
-            LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(slot_idx) - 
+            LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(slot_idx) -
                            LWB_CONF_T_GUARD);
             LWB_RCV_PACKET();
             payload_len = glossy_get_payload_len();
@@ -762,7 +829,7 @@ BOOTSTRAP:
                 DEBUG_PRINT_VERBOSE("data received");
                 /* replace target node ID by sender node ID */
                 glossy_payload.data_pkt.recipient = schedule.slot[i];
-                lwb_in_buffer_put(glossy_payload.raw_data, 
+                lwb_in_buffer_put(glossy_payload.raw_data,
                                   payload_len);
               } else {
                 DEBUG_PRINT_VERBOSE("received packet dropped");
@@ -789,13 +856,13 @@ BOOTSTRAP:
                                       LWB_INVALID_STREAM_ID)) {
       #if LWB_CONF_MAX_CONT_BACKOFF
               /* wait between 1 and LWB_CONF_MAX_CONT_BACKOFF rounds */
-              rounds_to_wait = (random_rand() >> 1) % 
+              rounds_to_wait = (random_rand() >> 1) %
                                LWB_CONF_MAX_CONT_BACKOFF + 1;
       #endif /* LWB_CONF_MAX_CONT_BACKOFF */
               payload_len = sizeof(lwb_stream_req_t);
               /* wait until the contention slot starts */
               LWB_WAIT_UNTIL(t_start + LWB_T_SLOT_START(slot_idx));
-              LWB_SEND_SRQ();  
+              LWB_SEND_SRQ();
               DEBUG_PRINT_INFO("request for stream %u sent",
                                glossy_payload.srq_pkt.stream_id);
             } /* else {
@@ -820,30 +887,51 @@ BOOTSTRAP:
         }
       }
     }
-    
+
+	// Turn of crystal oscillator of radio to save energy.
+	if (LWB_SCHED_N_SLOTS(&schedule) < LWB_CONF_MAX_DATA_SLOTS) {
+		// radio off
+		cc2420_radio_strobe(CC2420_SXOSCOFF);
+		LWB_RND_OFF;
+		//wait until 5ms before next wait_until
+		LWB_WAIT_UNTIL(t_start + LWB_CONF_T_SCHED2_START - t_guard - (LWB_RTIMER_SECOND / 200));
+		// radio on
+		cc2420_radio_strobe(CC2420_SXOSCON);
+		// TODO: wait for stabilization and check afterwards if timings are ok
+		// while (!(cc2420_radio_strobe(CC2420_SNOP) & BV(CC2420_XOSC16M_STABLE)));
+		LWB_RND_ON;
+	}
+
     /* --- 2ND SCHEDULE --- */
 
     LWB_WAIT_UNTIL(t_start + LWB_CONF_T_SCHED2_START - t_guard);
     LWB_RCV_SCHED();
-  
+
+	// radio off
+	cc2420_radio_strobe(CC2420_SXOSCOFF);
+	LWB_RND_OFF;
+
     /* compute new sync state and update t_guard */
     sync_state = lwb_update_sync_state(sync_state, &schedule);
     t_guard    = guard_time[sync_state];            /* adjust the guard time */
     if(LWB_STATE_BOOTSTRAP == sync_state) {
       goto BOOTSTRAP;         /* wrong schedule received > back to bootstrap */
     }
-    
+
     /* --- COMMUNICATION ROUND ENDS --- */
     /* time for other computations */
 
+    // enabling/disabling interrupts is only relevant for source nodes
+	P2IE |= BV(6);
+
     /* check joining state */
-    if(LWB_STREAMS_ACTIVE && ((schedule.time - stats.t_slot_last) > 
+    if(LWB_STREAMS_ACTIVE && ((schedule.time - stats.t_slot_last) >
                               (LWB_CONF_SCHED_PERIOD_MAX << 2))) {
       DEBUG_PRINT_WARNING("no-slot timeout, requesting new stream...");
       lwb_stream_rejoin();  /* re-join (all streams) */
       stats.t_slot_last = schedule.time;
     }
-    
+
     /* estimate the clock drift */
 #if (LWB_CONF_TIME_SCALE == 1)  /* only calc drift if time scale is not used */
     /* t_ref can't be used in this case -> use t_ref_lf instead */
@@ -897,7 +985,32 @@ BOOTSTRAP:
     if(post_proc) {
       process_poll(post_proc);
     }
-    
+
+	// wake up 50ms earlier to disable interrupts
+	LWB_WAIT_UNTIL(t_start +
+				   ((rtimer_ext_clock_t)schedule.period * LWB_RTIMER_SECOND
+					 + (((int32_t)schedule.period * stats.drift) / 256)) /
+					 LWB_CONF_TIME_SCALE -
+				   t_guard -
+				   LWB_CONF_T_PREPROCESS -
+			   		DISABLE_INT_BUFFER);
+
+    // enabling/disabling interrupts is only relevant for source nodes
+   	P2IE &= ~BV(6);
+
+	//wait until 5ms before next wait_until
+	LWB_WAIT_UNTIL(t_start +
+                   ((rtimer_ext_clock_t)schedule.period * LWB_RTIMER_SECOND
+                     + (((int32_t)schedule.period * stats.drift) / 256)) /
+                     LWB_CONF_TIME_SCALE -
+                   t_guard -
+                   LWB_CONF_T_PREPROCESS - (LWB_RTIMER_SECOND / 200));
+	// radio on
+	cc2420_radio_strobe(CC2420_SXOSCON);
+	// TODO: wait for stabilization and check afterwards if timings are ok
+	// while (!(cc2420_radio_strobe(CC2420_SNOP) & BV(CC2420_XOSC16M_STABLE)));
+	LWB_RND_ON;
+
     LWB_WAIT_UNTIL(t_start +
                    ((rtimer_ext_clock_t)schedule.period * LWB_RTIMER_SECOND
                      + (((int32_t)schedule.period * stats.drift) / 256)) /
@@ -905,6 +1018,7 @@ BOOTSTRAP:
                    t_guard -
                    LWB_CONF_T_PREPROCESS);
     LWB_AFTER_DEEPSLEEP();
+	LWB_RND_OFF;
   }
 
   PT_END(&lwb_pt);
@@ -917,13 +1031,15 @@ lwb_start(struct process* pre_lwb_proc,
 {
   pre_proc  = (struct process*)pre_lwb_proc;
   post_proc = (struct process*)post_lwb_proc;
-  
+
   /* rtimer-ext is required for lwb */
   //rtimer_ext_init();    -> should be called from clock_init()
-  
-  /* debug-print is required for lwb */
+
+/*
+  // debug-print is required for lwb
   debug_print_init();
-  
+*/
+
   DEBUG_PRINT_INFO("Starting 'LWB protothread'");
   DEBUG_PRINT_INFO("T=%ums T_s=%ums T_d=%ums T_c=%ums l=%ub N_s=%u "
                    "N_tx=%u N_h=%u",
@@ -943,19 +1059,19 @@ lwb_start(struct process* pre_lwb_proc,
   if(LWB_CONF_T_SCHED2_START < (LWB_T_ROUND_MAX / LWB_CONF_TIME_SCALE)) {
     DEBUG_PRINT_INFO("WARNING: LWB_CONF_T_SCHED2_START < LWB_T_ROUND_MAX!");
   }
-  
+
   /* pass the start addresses of the memory blocks holding the queues */
   fifo16_init(&in_buffer, (uint16_t)in_buffer_mem);
   fifo16_init(&out_buffer, (uint16_t)out_buffer_mem);
-  
+
 #ifdef LWB_CONF_TASK_ACT_PIN
   PIN_CFG_OUT(LWB_CONF_TASK_ACT_PIN);
   PIN_CLR(LWB_CONF_TASK_ACT_PIN);
 #endif /* LWB_CONF_TASK_ACT_PIN */
-  
+
   /* initialize the protothread */
   PT_INIT(&lwb_pt);
-  
+
   if(is_host) {
     /* note: must add at least some clock ticks! */
     rtimer_ext_schedule(LWB_CONF_RTIMER_ID, LWB_RTIMER_NOW() +

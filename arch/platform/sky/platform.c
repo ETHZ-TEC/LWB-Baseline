@@ -34,7 +34,6 @@
 #include "sys/energest.h"
 #include "cc2420.h"
 #include "dev/ds2411/ds2411.h"
-#include "dev/leds.h"
 #include "dev/serial-line.h"
 #include "dev/slip.h"
 #include "dev/uart1.h"
@@ -97,6 +96,7 @@ force_inclusion(int d1, int d2)
 }
 #endif
 /*---------------------------------------------------------------------------*/
+/*
 static void
 set_lladdr(void)
 {
@@ -118,6 +118,7 @@ set_lladdr(void)
 #endif
   linkaddr_set_node_addr(&addr);
 }
+*/
 /*---------------------------------------------------------------------------*/
 #if WITH_TINYOS_AUTO_IDS
 uint16_t TOS_NODE_ID = 0x1234; /* non-zero */
@@ -131,9 +132,6 @@ platform_init_stage_one(void)
    */
   msp430_cpu_init();
 
-  leds_init();
-  leds_on(LEDS_RED);
-
 #ifdef FLOCKLAB
   FLOCKLAB_INIT();
 #endif /* FLOCKLAB */
@@ -143,19 +141,15 @@ void
 platform_init_stage_two(void)
 {
   uart1_init(BAUD2UBR(115200)); /* Must come before first printf */
+  UCTL1 |= SWRST; // disable UART module
 
-  leds_on(LEDS_GREEN);
-  ds2411_init();
+  // ds2411_init();
 
   /* XXX hack: Fix it so that the 802.15.4 MAC address is compatible
      with an Ethernet MAC address - byte 0 (byte 2 in the DS ID)
      cannot be odd. */
-  ds2411_id[2] &= 0xfe;
-
-  leds_on(LEDS_BLUE);
+  // ds2411_id[2] &= 0xfe;
   xmem_init();
-
-  leds_off(LEDS_RED);
   /*
    * Hardware initialization done!
    */
@@ -176,11 +170,10 @@ platform_init_stage_two(void)
   }
 #endif
 
-  random_init(ds2411_id[0] + node_id);
+  // random_init(ds2411_id[0] + node_id);
+  random_init(node_id);
 
-  leds_off(LEDS_BLUE);
-
-  set_lladdr();
+  // set_lladdr();
 
   /*
    * main() will turn the radio on inside netstack_init(). The CC2420
@@ -197,7 +190,7 @@ platform_init_stage_three(void)
   uint8_t longaddr[8];
   uint16_t shortaddr;
 
-  init_platform();
+  // init_platform();
 
   shortaddr = (linkaddr_node_addr.u8[0] << 8) + linkaddr_node_addr.u8[1];
   memset(longaddr, 0, sizeof(longaddr));
@@ -221,12 +214,12 @@ platform_init_stage_three(void)
            NETSTACK_MAC.name, CC2420_CONF_CHANNEL);
 #endif /* NETSTACK_CONF_WITH_IPV6 */
 
+/*
 #if !NETSTACK_CONF_WITH_IPV6
   uart1_set_input(serial_line_input_byte);
   serial_line_init();
 #endif
-
-  leds_off(LEDS_GREEN);
+*/
 
 #if TIMESYNCH_CONF_ENABLED
   timesynch_init();
@@ -249,7 +242,7 @@ platform_idle(void)
    */
   int s = splhigh();		/* Disable interrupts. */
   /* uart1_active is for avoiding LPM3 when still sending or receiving */
-  if(process_nevents() != 0 || uart1_active()) {
+  if(process_nevents() != 0) {
     splx(s);			/* Re-enable interrupts. */
   } else {
 #if DCOSYNCH_CONF_ENABLED
@@ -268,17 +261,7 @@ platform_idle(void)
     DCSTAT_CPU_OFF;
     ENERGEST_SWITCH(ENERGEST_TYPE_CPU, ENERGEST_TYPE_LPM);
     watchdog_stop();
-    /* check if the DCO needs to be on - if so - only LPM 1 */
-    if (msp430_dco_required) {
-      _BIS_SR(GIE | CPUOFF); /* LPM1 sleep for DMA to work!. */
-    } else {
-      _BIS_SR(GIE | SCG0 | SCG1 | CPUOFF); /* LPM3 sleep. This
-						statement will block
-						until the CPU is
-						woken up by an
-						interrupt that sets
-						the wake up flag. */
-    }
+    _BIS_SR(GIE | CPUOFF); /* LPM0 sleep for DMA to work!. */
     watchdog_start();
     ENERGEST_SWITCH(ENERGEST_TYPE_LPM, ENERGEST_TYPE_CPU);
     DCSTAT_CPU_ON;

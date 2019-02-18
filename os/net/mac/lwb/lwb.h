@@ -419,6 +419,9 @@ uint8_t lwb_rcv_pkt(uint8_t* out_data,
                     uint16_t * const out_node_id,
                     uint8_t * const out_stream_id);
 
+/* Resets the queue of received messages. Messages in the queue are lost. */
+void lwb_reset_rcv_queue(void);
+
 /**
  * @brief check the status of the receive buffer (incoming messages)
  * @return the number of packets in the queue

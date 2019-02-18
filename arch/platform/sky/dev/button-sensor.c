@@ -44,17 +44,17 @@ HWCONF_PIN(BUTTON, 2, 7);
 HWCONF_IRQ(BUTTON, 2, 7);
 
 /*---------------------------------------------------------------------------*/
-ISR(PORT2, irq_p2)
-{
-  if(BUTTON_CHECK_IRQ()) {
-    if(timer_expired(&debouncetimer)) {
-      timer_set(&debouncetimer, CLOCK_SECOND / 4);
-      sensors_changed(&button_sensor);
-      LPM4_EXIT;
-    }
-  }
-  P2IFG = 0x00;
-}
+// ISR(PORT2, irq_p2)
+// {
+//   if(BUTTON_CHECK_IRQ()) {
+//     if(timer_expired(&debouncetimer)) {
+//       timer_set(&debouncetimer, CLOCK_SECOND / 4);
+//       sensors_changed(&button_sensor);
+//       LPM4_EXIT;
+//     }
+//   }
+//   P2IFG = 0x00;
+// }
 /*---------------------------------------------------------------------------*/
 static int
 value(int type)

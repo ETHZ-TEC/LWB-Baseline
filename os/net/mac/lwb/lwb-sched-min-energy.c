@@ -41,22 +41,22 @@
  *
  * @brief
  * a scheduler implementation for the LWB
- * 
+ *
  * The scheduler tries to minimize energy consumption by maximizing the
  * period such that the bandwidth demands in the network are still met.
  * Besides, the scheduler keeps the period changes to a minimum
  * to reduce chances of a link loss and thus increase stability.
- * 
+ *
  * @remarks:
  * - TIME_SCALE removed (i.e. fixed to 1)
  * - dynamic period only
- * - JOINING_NODES, TWO_SCHEDS, COMPRESS, REMOVE_NODES and DYNAMIC_FREE_SLOTS 
+ * - JOINING_NODES, TWO_SCHEDS, COMPRESS, REMOVE_NODES and DYNAMIC_FREE_SLOTS
  *   set to 1 (i.e. removed)
  * - everything with MINIMIZE_LATENCY removed
  * - external memory support added
  * - list for pending S-ACKs added
  */
- 
+
 #include "lwb.h"
 #include "list.h"
 #include "memb.h"
@@ -73,7 +73,7 @@
 
 /*---------------------------------------------------------------------------*/
 typedef struct {
-  /* starting time offset (necessary to get rid of e.g. a backlog of messages 
+  /* starting time offset (necessary to get rid of e.g. a backlog of messages
    * within a short time) */
   int8_t   t_offset;
 } lwb_stream_extra_data_t;
@@ -111,13 +111,13 @@ static uint32_t          data_cnt;
 static uint16_t          data_ipi;
 static volatile uint8_t  n_pending_sack = 0;
 /* factor of 4 because of the memory alignment and faster index calculation! */
-static uint8_t           pending_sack[4 * LWB_CONF_SCHED_SACK_BUFFER_SIZE]; 
-/* a list of pointers to the stream info structures, for faster access 
+static uint8_t           pending_sack[4 * LWB_CONF_SCHED_SACK_BUFFER_SIZE];
+/* a list of pointers to the stream info structures, for faster access
   * (constant time vs. linear time) */
 static lwb_stream_list_t  *streams[LWB_CONF_MAX_DATA_SLOTS];
 LIST(streams_list);                  /* -> lists only work for data in RAM */
 /* data structures to hold the stream info */
-MEMB(streams_memb, lwb_stream_list_t, LWB_CONF_MAX_N_STREAMS);  
+MEMB(streams_memb, lwb_stream_list_t, LWB_CONF_MAX_N_STREAMS);
 /*---------------------------------------------------------------------------*/
 /**
  * @brief   remove a stream from the stream list on the host
@@ -125,22 +125,24 @@ MEMB(streams_memb, lwb_stream_list_t, LWB_CONF_MAX_N_STREAMS);
  * @param[in] address (in the ext. mem.) of the stream to remove
  */
 static inline void
-lwb_sched_del_stream(lwb_stream_list_t* stream) 
+lwb_sched_del_stream(lwb_stream_list_t* stream)
 {
   if(0 == stream) {
     return;  /* entry not found, don't do anything */
   }
+/*
   uint16_t id  = stream->id;
   uint8_t  stream_id  = stream->stream_id;
+*/
   list_remove(streams_list, stream);
   memb_free(&streams_memb, stream);
   n_streams--;
-  sched_stats.n_deleted++;  
+  sched_stats.n_deleted++;
   DEBUG_PRINT_INFO("stream %u.%u removed", id, stream_id);
 }
 /*---------------------------------------------------------------------------*/
 uint8_t
-lwb_sched_prepare_sack(void *payload) 
+lwb_sched_prepare_sack(void *payload)
 {
   if(n_pending_sack) {
     DEBUG_PRINT_VERBOSE("%u S-ACKs pending", n_pending_sack);
@@ -153,16 +155,16 @@ lwb_sched_prepare_sack(void *payload)
 }
 /*---------------------------------------------------------------------------*/
 void
-lwb_sched_proc_srq(const lwb_stream_req_t* req) 
+lwb_sched_proc_srq(const lwb_stream_req_t* req)
 {
   lwb_stream_list_t *s  = 0;
-  lwb_stream_extra_data_t* extra_data = 
+  lwb_stream_extra_data_t* extra_data =
     (lwb_stream_extra_data_t*)req->extra_data;
   sched_stats.t_last_req = time;
 
-  if(LWB_INVALID_STREAM_ID == req->stream_id) { 
+  if(LWB_INVALID_STREAM_ID == req->stream_id) {
     DEBUG_PRINT_WARNING("invalid stream request (LWB_INVALID_STREAM_ID)");
-    return; 
+    return;
   }
   if(n_pending_sack >= LWB_CONF_SCHED_SACK_BUFFER_SIZE) {
     DEBUG_PRINT_WARNING("max. number of sack's reached, stream request "
@@ -171,7 +173,7 @@ lwb_sched_proc_srq(const lwb_stream_req_t* req)
   }
   /* add and remove requests are implicitly given by the ipi
    * an ipi of 0 implies 'remove' */
-  if(req->ipi > 0) { 
+  if(req->ipi > 0) {
     uint32_t last = 0;
     if((int32_t)time + (int32_t)extra_data->t_offset > 0) {
       last = (int32_t)time + (int32_t)extra_data->t_offset;
@@ -188,7 +190,7 @@ lwb_sched_proc_srq(const lwb_stream_req_t* req)
                               req->id, req->stream_id);
           goto add_sack;
         }
-      }  
+      }
     }
     /* does not exist: add the new stream */
     s = memb_alloc(&streams_memb);
@@ -205,12 +207,12 @@ lwb_sched_proc_srq(const lwb_stream_req_t* req)
     /* insert the stream into the list, ordered by node id */
     lwb_stream_list_t *prev;
     for(prev = list_head(streams_list); prev != NULL; prev = prev->next) {
-      if((req->id >= prev->id) && 
+      if((req->id >= prev->id) &&
          ((prev->next == NULL) || (req->id < prev->next->id))) {
         break;
       }
     }
-    list_insert(streams_list, prev, s);   
+    list_insert(streams_list, prev, s);
     n_streams++;
     sched_stats.n_added++;
     DEBUG_PRINT_VERBOSE("stream %u.%u added", req->id, req->stream_id);
@@ -237,8 +239,8 @@ add_sack:
  * @param[in] v an unsigned integer
  * @return the greatest common divider of u and v
  */
-static inline uint16_t 
-gcd(uint16_t u, uint16_t v) 
+static inline uint16_t
+gcd(uint16_t u, uint16_t v)
 {
   uint16_t shift;
 
@@ -280,19 +282,20 @@ gcd(uint16_t u, uint16_t v)
  * @brief adapts the communication period T according to the traffic demand
  * @return the new period
  */
-static inline uint16_t 
+static inline uint16_t
 lwb_sched_adapt_period(void)
 {
   if(time < (sched_stats.t_last_req + LWB_CONF_SCHED_T_NO_REQ)) {
-    /* we have received stream requests in the last LWB_CONF_SCHED_T_NO_REQ 
+    /* we have received stream requests in the last LWB_CONF_SCHED_T_NO_REQ
      * seconds: set the period to a low value */
-    return LWB_CONF_SCHED_PERIOD_MIN;
+	// During the first minute in the competition, all nodes should bootstrap and register a stream.
+	return LWB_CONF_SCHED_PERIOD_IDLE;
   }
   if(!data_cnt) {
     return LWB_CONF_SCHED_PERIOD_IDLE;     /* no streams */
   }
   saturated = 0;
-  uint16_t new_period = (uint16_t)(((uint32_t)data_ipi * 
+  uint16_t new_period = (uint16_t)(((uint32_t)data_ipi *
                                     LWB_CONF_MAX_DATA_SLOTS) / data_cnt);
   /*new_period = (((uint32_t)data_ipi * LWB_CONF_MAX_DATA_SLOTS) / data_cnt) *
    *             n_pkts / n_slots;*/
@@ -318,15 +321,15 @@ lwb_sched_adapt_period(void)
  * @param[in] stream_list the list of stream IDs to search
  * @param[in] list_len the number of entries in the node and stream list
  * @return one if the id/stream_id exists in the list, zero otherwise
- * @remark this search could be optimized as the node ids in the list are 
+ * @remark this search could be optimized as the node ids in the list are
  * supposed to be sorted in increasing order
  */
-static inline uint8_t 
-lwb_sched_stream_in_list(uint16_t id, 
-                         uint8_t stream_id, 
-                         const uint16_t* node_list, 
-                         const uint8_t* stream_list, 
-                         uint8_t list_len) 
+static inline uint8_t
+lwb_sched_stream_in_list(uint16_t id,
+                         uint8_t stream_id,
+                         const uint16_t* node_list,
+                         const uint8_t* stream_list,
+                         uint8_t list_len)
 {
   while(list_len) {
     if(*node_list == id && *stream_list == stream_id) {
@@ -339,26 +342,26 @@ lwb_sched_stream_in_list(uint16_t id,
   return 0;
 }
 /*---------------------------------------------------------------------------*/
-uint16_t 
-lwb_sched_compute(lwb_schedule_t * const sched, 
-                  const uint8_t * const streams_to_update, 
-                  uint8_t reserve_slot_host) 
+uint16_t
+lwb_sched_compute(lwb_schedule_t * const sched,
+                  const uint8_t * const streams_to_update,
+                  uint8_t reserve_slot_host)
 {
   static uint16_t slots_tmp[LWB_CONF_MAX_DATA_SLOTS];
 
   data_ipi = 1;
   data_cnt = 0;
-  first_index = 0; 
+  first_index = 0;
   n_slots_assigned = 0;
 
   /* loop through all the streams in the list */
   memset(streams, 0, sizeof(streams)); /* clear content of the stream list */
   lwb_stream_list_t *curr_stream = list_head(streams_list);
   while(curr_stream != NULL) {
-    if(lwb_sched_stream_in_list(curr_stream->id, 
-                                curr_stream->stream_id, 
-                                sched->slot, 
-                                streams_to_update, 
+    if(lwb_sched_stream_in_list(curr_stream->id,
+                                curr_stream->stream_id,
+                                sched->slot,
+                                streams_to_update,
                                 LWB_SCHED_N_SLOTS(sched))) {
       curr_stream->n_cons_missed = 0;
     } else if(curr_stream->n_cons_missed & 0x80) {
@@ -382,14 +385,14 @@ lwb_sched_compute(lwb_schedule_t * const sched,
   }
 
   /* clear content of the schedule (do NOT move this line further above!) */
-  memset(sched->slot, 0, sizeof(sched->slot));  
+  memset(sched->slot, 0, sizeof(sched->slot));
   /* assign slots to the host (max. 1 in this case) */
   if(reserve_slot_host) {
     DEBUG_PRINT_INFO("assigning a slot to the host");
     sched->slot[0] = node_id;
     n_slots_assigned++;
     sched_stats.t_last_req = time;
-  }  
+  }
   period = lwb_sched_adapt_period();               /* adapt the round period */
   time += period;                    /* increment time by the current period */
 
@@ -399,7 +402,7 @@ lwb_sched_compute(lwb_schedule_t * const sched,
   /* random initial position in the list */
   uint16_t rand_init_pos = (random_rand() >> 1) % n_streams;
   uint16_t i;
-  
+
   curr_stream = list_head(streams_list);
   /* make curr_stream point to the random initial position */
   for(i = 0; i < rand_init_pos; i++) {
@@ -409,13 +412,13 @@ lwb_sched_compute(lwb_schedule_t * const sched,
   lwb_stream_list_t *init_stream = curr_stream;
   do {
     /* assign slots for this stream, if possible */
-    if((n_slots_assigned < LWB_CONF_MAX_DATA_SLOTS) && 
+    if((n_slots_assigned < LWB_CONF_MAX_DATA_SLOTS) &&
        (time >= (curr_stream->ipi + curr_stream->last_assigned))) {
       /* the number of slots to assign to curr_stream */
-      uint16_t to_assign = (time - curr_stream->last_assigned) / 
+      uint16_t to_assign = (time - curr_stream->last_assigned) /
                            curr_stream->ipi;  /* elapsed time / period */
       if(saturated) {
-        if((curr_stream->next == init_stream) || 
+        if((curr_stream->next == init_stream) ||
            (curr_stream->next == NULL && rand_init_pos == 0)) {
           /* last random stream: assign all possible slots */
         } else {
@@ -425,7 +428,7 @@ lwb_sched_compute(lwb_schedule_t * const sched,
           if(to_assign > slots_ipi) {
             to_assign = slots_ipi;
             if(to_assign == 0 && curr_stream == init_stream) {
-              /* first random stream: assign one slot to it, even if it has 
+              /* first random stream: assign one slot to it, even if it has
                * very long IPI */
               to_assign = 1;
             }
@@ -442,23 +445,23 @@ lwb_sched_compute(lwb_schedule_t * const sched,
       }
       /* set the last bit, we are expecting a packet from this stream in the
        * next round */
-      curr_stream->n_cons_missed |= 0x80; 
+      curr_stream->n_cons_missed |= 0x80;
     }
     /* go to the next stream in the list */
     curr_stream = curr_stream->next;
     if(curr_stream == NULL) {
       /* end of the list: start again from the head of the list */
       curr_stream = list_head(streams_list);
-      first_index = n_slots_assigned; 
+      first_index = n_slots_assigned;
     }
   } while(curr_stream != init_stream);
 
   /* copy into new data structure to keep the node IDs ordered */
-  memcpy(&sched->slot[reserve_slot_host], &slots_tmp[first_index], 
+  memcpy(&sched->slot[reserve_slot_host], &slots_tmp[first_index],
          (n_slots_assigned - first_index) * sizeof(sched->slot[0]));
-  memcpy(&sched->slot[n_slots_assigned - first_index + reserve_slot_host], 
+  memcpy(&sched->slot[n_slots_assigned - first_index + reserve_slot_host],
          slots_tmp, first_index * sizeof(sched->slot[0]));
-  
+
 set_schedule:
   sched->n_slots = n_slots_assigned;
 
@@ -468,7 +471,7 @@ set_schedule:
   /* always schedule a contention slot */
   sched_stats.t_last_cont = time;
   LWB_SCHED_SET_CONT_SLOT(sched);
-  
+
 #if LWB_CONF_SCHED_COMPRESS
   uint8_t len = lwb_sched_compress((uint8_t*)sched->slot, n_slots_assigned);
   if((len + LWB_SCHED_PKT_HEADER_LEN) > LWB_CONF_MAX_PKT_LEN) {
@@ -478,20 +481,20 @@ set_schedule:
   uint8_t len = n_slots_assigned * 2;
 #endif /* LWB_CONF_SCHED_COMPRESS */
 
-  /* this schedule is sent at the end of a round: do not communicate 
+  /* this schedule is sent at the end of a round: do not communicate
    * (i.e. do not set the first bit of period) */
   sched->period = period;   /* no need to clear the last bit */
   sched->time   = time;
   /* log the parameters of the new schedule */
-  DEBUG_PRINT_INFO("schedule updated (s=%u T=%u n=%u|%u l=%u|%u)", 
-                   n_streams, sched->period, n_slots_assigned, 
+  DEBUG_PRINT_INFO("schedule updated (s=%u T=%u n=%u|%u l=%u|%u)",
+                   n_streams, sched->period, n_slots_assigned,
                    sched->n_slots >> 14, len, n_slots_assigned * 2);
-  
+
   return len + LWB_SCHED_PKT_HEADER_LEN;
 }
 /*---------------------------------------------------------------------------*/
 uint16_t
-lwb_sched_init(lwb_schedule_t* sched) 
+lwb_sched_init(lwb_schedule_t* sched)
 {
   memb_init(&streams_memb);
   list_init(streams_list);
@@ -510,10 +513,10 @@ lwb_sched_init(lwb_schedule_t* sched)
   sched->time = time;
   sched->period = period;
   /* mark as first schedule (beginning of a round) */
-  LWB_SCHED_SET_AS_1ST(sched); 
-  
+  LWB_SCHED_SET_AS_1ST(sched);
+
   DEBUG_PRINT_INFO("min-energy scheduler initialized");
-  
+
   return LWB_SCHED_PKT_HEADER_LEN; /* empty schedule, no slots allocated yet */
 }
 /*---------------------------------------------------------------------------*/
